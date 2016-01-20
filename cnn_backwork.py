@@ -6,6 +6,7 @@ import tensorflow as tf
 
 import input_data
 from my_mnist_backwork_input_pool import build_model, model_options
+import functools
 
 ### LOGGER SETTINGS
 logger = logging.getLogger(__name__)
@@ -102,27 +103,50 @@ def build_cost(data, x, layers, sess, model_options):
     return costs
 
 
+def eval_cnn(x_pf, softmax_layer, label, num_features, input_):
+
+    input_val = input_.eval()
+    input_val = input_val.reshape(-1, num_features)
+
+    softmax = softmax_layer.eval(feed_dict={x_pf: input_val})
+
+    prob_correct_mean = softmax[:, label].mean()
+    prob_correct_min = softmax[:, label].min()
+
+    return input_val, softmax, prob_correct_mean, prob_correct_min
+
+
 def get_faulty_input_layer(data, model_options):
 
     # Note: convolution + activation + pooling is considered 1 layer
     params, x, y, layers = build_model(model_options, const_params=True)
+    params_pf, x_pf, y_pf, layers_pf = build_model(model_options)
+    softmax_layer_pf = layers_pf[-1]
 
     save_freq = model_options.get('save_freq', 20)
     label = model_options['label']
+    num_features = model_options['num_features']
     min_num_steps = model_options.get('min_num_steps', 0)
     max_num_steps = model_options.get('max_num_steps', np.inf)
     tolerance = model_options.get('tolerance', 0)
     prob_cap_mean = model_options.get('prob_cap_mean', 1)
     prob_cap_min = model_options.get('prob_cap_min', 1)
 
+    if not (max_num_steps < np.inf or (tolerance > 0 or prob_cap_mean < 1 or prob_cap_min < 1) and min_num_steps < np.inf):
+        logger.warn('no exit conditions for backworking CNN inputs')
+
+    eval_cnn_wrapper = functools.partial(eval_cnn, x_pf, softmax_layer_pf, label, num_features)
+
     l = []
 
     with tf.Session() as sess:
 
+        logger.info('building model')
         costs = build_cost(data, x, layers, sess, model_options)
         cost = sum(costs)
 
         optimize_input_layer = tf.train.AdamOptimizer(learning_rate=0.01).minimize(cost)
+        logger.info('starting backworking')
 
         tf.initialize_all_variables().run()
         import time
@@ -145,12 +169,7 @@ def get_faulty_input_layer(data, model_options):
                     layer = layers[idx // 2]
                     logger.debug('layer %s cost %f', layer.name, c.eval())
                 if (save_freq and i % save_freq == 0) or i == max_num_steps - 1:
-                    val = x.eval()
-                    softmax = prop_forward(val, model_options)
-                    l.append((val, softmax))
-
-                    prob_correct_mean = softmax[:, label].mean()
-                    prob_correct_min = softmax[:, label].min()
+                    input_val, softmax, prob_correct_mean, prob_correct_min = eval_cnn_wrapper(x)
                     logger.info('%f / %f min / mean probability of correct label', prob_correct_min, prob_correct_mean)
                     if (prob_correct_mean > prob_cap_mean or prob_correct_min > prob_cap_min) and i >= min_num_steps:
                         break
@@ -167,21 +186,6 @@ def get_faulty_input_layer(data, model_options):
 
         return l
 
-
-def prop_forward(input_, model_options):
-
-    fp_params = model_options['fp_params']
-
-    params, x, y, layers = build_model(model_options, fp_params)
-    softmax_layer = layers[-1]
-
-    input_ = input_.reshape(-1, model_options['num_features'])
-
-    with tf.Session():
-        tf.initialize_all_variables().run()
-        res = softmax_layer.eval(feed_dict={x: input_})
-
-    return res
 
 if __name__ == '__main__':
 
@@ -206,14 +210,14 @@ if __name__ == '__main__':
         'cost_factors': cost_factors,
         'save_freq': 4,
         'prob_cap_min': 0.999,
-        'num_examples': 4,
+        'num_examples': 2,
         'prev_coeff': 0.5,
         'sim_coeff': 0.5,
     }
 
     model_options.update(model_options_update)
 
-    for label in range(10):
+    for label in range(6, 10):
 
         model_options['label'] = label
 

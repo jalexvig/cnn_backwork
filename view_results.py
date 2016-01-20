@@ -16,4 +16,4 @@ def view_results(label, start=-1):
 
 if __name__ == '__main__':
 
-    view_results(0)
+    view_results(5)
