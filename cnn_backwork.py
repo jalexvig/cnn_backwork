@@ -1,6 +1,5 @@
 import logging
 import pickle
-import sys
 
 import numpy as np
 import tensorflow as tf
@@ -10,11 +9,6 @@ from my_mnist_backwork_input_pool import build_model, model_options
 
 ### LOGGER SETTINGS
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-FORMAT = '%(levelname)s: %(message)s'
-handler = logging.StreamHandler(sys.stderr)
-handler.setLevel(logging.DEBUG)
-logger.addHandler(handler)
 
 
 def compute_layers_fixed_label(data, label, x, layers, sess):
@@ -29,37 +23,83 @@ def compute_layers_fixed_label(data, label, x, layers, sess):
     return layers_label
 
 
-def get_cost_from_layer(layer, layer_label):
+def get_cost_from_layer(layer, layer_label, label, prev_coeff=1, sim_coeff=1):
 
-    # layer has dimensionality (num_gen_inputs, 28, 28, 1)
+    # layer has dimensionality (num_gen_examples, 28, 28, 1)
     # layer_label has dimensionality (num_training_examples_label, 28, 28, 1)
 
-    # This will compute the mean over all randomly generated inputs as well as layer evaluated over all training data
-    layer = tf.expand_dims(layer, 1)
-    cost = tf.reduce_mean(tf.pow(layer - layer_label, 2))
+    # TODO: These dimensionality calculations are not correct b/c there are non convolutional layers
 
-    return cost
+    # layer_shape = layer.get_shape().as_list()
+
+    layer2 = tf.expand_dims(layer, 1)
+    layer_label2 = tf.expand_dims(layer_label, 1)
+    layer_name = layer.name.lower()
+
+    prev_dist_term = tf.pow(layer - layer_label2, 2)
+    similarity_dist_term = tf.pow(layer - layer2, 2)
+
+    if 'softmax' in layer_name:
+        # Add all probabilities of guessing the wrong answer
+        # cost = tf.reduce_sum(layer) - tf.reduce_sum(layer[:, label])
+
+        # Use example that has least prob of correct classification since aboce does not converge well
+        cost = tf.reduce_sum(layer, reduction_indices=[1]) - layer[:, label]
+        cost = tf.reduce_max(cost)
+
+        return (cost,)
+
+    elif 'inputs' in layer_name or 'conv' in layer_name:
+        # (num_training_examples_label, num_gen_examples, 28, 28, 1)
+        # Get the mean of the minimum distances of generated inputs to training examples of label
+        prev_dist_term = tf.reduce_mean(prev_dist_term, reduction_indices=[2, 3, 4])
+
+        # overcount = similarity_dist_term[slice(0, layer_shape[0]), slice(0, layer_shape[0]), :, :, :]
+
+    elif 'fc' in layer_name:
+        pass
+        # overcount = similarity_dist_term[slice(0, layer_shape[0]), slice(0, layer_shape[0]), :]
+
+    else:
+        logger.warn('Unknown layer type %s', layer_name)
+        raise ValueError
+
+    prev_dist_term = tf.reduce_min(prev_dist_term, reduction_indices=[0])
+    prev_dist_term = tf.reduce_mean(prev_dist_term)
+
+    # TODO: fix calculation of overcount (2x above)
+    # # Take mean over all relevant differences
+    # similarity_dist_term = tf.reduce_sum(similarity_dist_term)
+    # similarity_dist_term -= overcount
+    # similarity_dist_term /= np.product(layer_shape) * (layer_shape[0] - 1)
+
+    similarity_dist_term = tf.reduce_mean(similarity_dist_term)
+
+    prev_cost = prev_coeff / prev_dist_term
+    sim_cost = sim_coeff / similarity_dist_term
+
+    return (prev_cost, sim_cost)
 
 
-def build_cost(data, x, layers, cost_factors, label, sess):
+def build_cost(data, x, layers, sess, model_options):
+
+    cost_factors = model_options['cost_factors']
+    label = model_options['label']
+    sim_coeff = model_options['sim_coeff']
+    prev_coeff = model_options['prev_coeff']
 
     layers_label = compute_layers_fixed_label(data, label, x, layers, sess)
     layers_label = [tf.constant(a, name='layer{}_fixed_label'.format(idx)) for idx, a in enumerate(layers_label)]
 
-    costs = [get_cost_from_layer(layer, layer_label) for layer, layer_label in zip(layers[:-1], layers_label[:-1])]
+    costs = []
+    for layer, layer_label in zip(layers, layers_label):
+        # TODO: get layer_shape
+        cost_tup = get_cost_from_layer(layer, layer_label, label, sim_coeff=sim_coeff, prev_coeff=prev_coeff)
+        costs.append(cost_tup)
 
-    # TODO(jalex): figure out if there is a better way of doing this
-    cost_softmax_layer = tf.reduce_sum(layers[-1]) - tf.reduce_sum(layers[-1][:, label])
+    costs = [f * c for f, cost_tup in zip(cost_factors, costs) for c in cost_tup]
 
-    # Seems like this isn't needed
-    # TODO(jalex): figure out if there is a better way of doing this (than adding a const)
-    # cost_softmax_layer += 1 / (layers[-1][:, label] + 1e-10)
-
-    costs.append(cost_softmax_layer)
-
-    cost = sum(f * c for f, c in zip(cost_factors, costs))
-
-    return cost
+    return costs
 
 
 def get_faulty_input_layer(data, model_options):
@@ -68,7 +108,6 @@ def get_faulty_input_layer(data, model_options):
     params, x, y, layers = build_model(model_options, const_params=True)
 
     save_freq = model_options.get('save_freq', 20)
-    cost_factors = model_options['cost_factors']
     label = model_options['label']
     min_num_steps = model_options.get('min_num_steps', 0)
     max_num_steps = model_options.get('max_num_steps', np.inf)
@@ -80,7 +119,8 @@ def get_faulty_input_layer(data, model_options):
 
     with tf.Session() as sess:
 
-        cost = build_cost(data, x, layers, cost_factors, label, sess)
+        costs = build_cost(data, x, layers, sess, model_options)
+        cost = sum(costs)
 
         optimize_input_layer = tf.train.AdamOptimizer(learning_rate=0.01).minimize(cost)
 
@@ -100,7 +140,10 @@ def get_faulty_input_layer(data, model_options):
                 t0 = time.time()
                 optimize_input_layer.run()
                 cost_val_new = cost.eval()
-                logger.debug('%f seconds in optimization cycle with cost %f', time.time() - t0, cost_val_new)
+                logger.info('%f seconds in optimization cycle with cost %f', time.time() - t0, cost_val_new)
+                for idx, c in enumerate(costs):
+                    layer = layers[idx // 2]
+                    logger.debug('layer %s cost %f', layer.name, c.eval())
                 if (save_freq and i % save_freq == 0) or i == max_num_steps - 1:
                     val = x.eval()
                     softmax = prop_forward(val, model_options)
@@ -108,7 +151,7 @@ def get_faulty_input_layer(data, model_options):
 
                     prob_correct_mean = softmax[:, label].mean()
                     prob_correct_min = softmax[:, label].min()
-                    logger.debug('%f / %f min / mean probability of correct label', prob_correct_min, prob_correct_mean)
+                    logger.info('%f / %f min / mean probability of correct label', prob_correct_min, prob_correct_mean)
                     if (prob_correct_mean > prob_cap_mean or prob_correct_min > prob_cap_min) and i >= min_num_steps:
                         break
 
@@ -142,19 +185,31 @@ def prop_forward(input_, model_options):
 
 if __name__ == '__main__':
 
-    num_layers = len(model_options['conv_layers']) + 2
-    cost_factors = np.logspace(-num_layers + 1, 0, num=num_layers)
+    import datetime
+    FORMAT = '%(levelname)s: %(message)s'
+    FILEPATH = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
+    FILEPATH += '_backwork_cnn.log'
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format=FORMAT,
+        filename=FILEPATH,
+    )
+
+    num_layers = len(model_options['conv_layers']) + 3
+    cost_factors = np.logspace(-num_layers, -1, num=num_layers)
+    cost_factors[-1] *= 100
 
     mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 
     model_options_update = {
         'cost_factors': cost_factors,
         'save_freq': 4,
-        'prob_cap_min': 0.99,
+        'prob_cap_min': 0.999,
         'num_examples': 4,
+        'prev_coeff': 0.5,
+        'sim_coeff': 0.5,
     }
-
-    # TODO: fix num_examples
 
     model_options.update(model_options_update)
 

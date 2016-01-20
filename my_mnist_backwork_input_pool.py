@@ -1,22 +1,14 @@
 import logging
+import math
 import os
 import pickle
 from collections import OrderedDict
-import math
 
-import numpy as np
 import tensorflow as tf
 
 import input_data
 
-### LOGGER SETTINGS
-import sys
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-FORMAT = '%(levelname)s: %(message)s'
-handler = logging.StreamHandler(sys.stderr)
-handler.setLevel(logging.DEBUG)
-logger.addHandler(handler)
 
 
 def _load_params(model_options, constant=False):
@@ -127,7 +119,7 @@ def build_model(model_options, const_params=False):
     x = tf.clip_by_value(x, 0, 1)
 
     # These are the correctly formatted images
-    image = tf.reshape(x, (-1, image_dim_size, image_dim_size, 1))
+    image = tf.reshape(x, (-1, image_dim_size, image_dim_size, 1), name='inputs')
     layers.append(image)
 
     params_list = list(params.values())
@@ -138,19 +130,19 @@ def build_model(model_options, const_params=False):
         image = tf.nn.conv2d(image, W, conv_layer['strides'], conv_layer['padding'], name='conv{}'.format(i))
         image += b
         image = conv_layer['act_fn'](image)
-        image = tf.nn.max_pool(image, pool_layer['filter'], pool_layer['strides'], pool_layer['padding'])
+        image = tf.nn.max_pool(image, pool_layer['filter'], pool_layer['strides'], pool_layer['padding'], name='conv{}'.format(i))
         # image = tf.nn.sigmoid(image, name='conv{}_sigmoid'.format(idx))
         layers.append(image)
 
     image_flat = tf.reshape(image, (-1, num_fc_in))
 
     W_fc, b_fc = params_list[-2]
-    fc_layer = tf.matmul(image_flat, W_fc) + b_fc
+    fc_layer = tf.nn.xw_plus_b(image_flat, W_fc, b_fc, name='fc')
     layers.append(fc_layer)
     fc_layer = tf.nn.relu(fc_layer)
 
     W_softmax, b_softmax = params_list[-1]
-    softmax_layer = tf.nn.softmax(tf.matmul(fc_layer, W_softmax) + b_softmax)
+    softmax_layer = tf.nn.softmax(tf.matmul(fc_layer, W_softmax) + b_softmax, 'softmax')
     layers.append(softmax_layer)
 
     return params, x, y, layers
@@ -236,6 +228,12 @@ model_options = {'image_dim_size': IMAGE_DIM_SIZE,
 
 
 if __name__ == '__main__':
+
+    FORMAT = '%(levelname)s: %(message)s'
+    logging.basicConfig(
+        level=logging.INFO,
+        format=FORMAT,
+    )
 
     ### PROCESS
 
