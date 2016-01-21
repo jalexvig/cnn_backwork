@@ -1,3 +1,4 @@
+import functools
 import logging
 import pickle
 
@@ -6,7 +7,6 @@ import tensorflow as tf
 
 import input_data
 from my_mnist_backwork_input_pool import build_model, model_options
-import functools
 
 ### LOGGER SETTINGS
 logger = logging.getLogger(__name__)
@@ -42,11 +42,11 @@ def get_cost_from_layer(layer, layer_label, label, prev_coeff=1, sim_coeff=1):
 
     if 'softmax' in layer_name:
         # Add all probabilities of guessing the wrong answer
-        # cost = tf.reduce_sum(layer) - tf.reduce_sum(layer[:, label])
+        cost = 1 - layer[:, label]
+        cost = tf.reduce_mean(cost)
 
-        # Use example that has least prob of correct classification since aboce does not converge well
-        cost = tf.reduce_sum(layer, reduction_indices=[1]) - layer[:, label]
-        cost = tf.reduce_max(cost)
+        # cost = tf.reduce_sum(layer, reduction_indices=[1]) - layer[:, label]
+        # cost = tf.reduce_max(cost)
 
         return (cost,)
 
@@ -106,14 +106,46 @@ def build_cost(data, x, layers, sess, model_options):
 def eval_cnn(x_pf, softmax_layer, label, num_features, input_):
 
     input_val = input_.eval()
-    input_val = input_val.reshape(-1, num_features)
 
-    softmax = softmax_layer.eval(feed_dict={x_pf: input_val})
+    softmax = softmax_layer.eval(feed_dict={x_pf: input_val.reshape(-1, num_features)})
 
-    prob_correct_mean = softmax[:, label].mean()
-    prob_correct_min = softmax[:, label].min()
+    return input_val, softmax
 
-    return input_val, softmax, prob_correct_mean, prob_correct_min
+
+class ProbTracker:
+
+    def __init__(self, timesteps, batch_size):
+
+        self._tracker = np.empty((timesteps, batch_size))
+        self._tracker.fill(np.nan)
+
+    def __call__(self, probs):
+
+        for j, prob in enumerate(probs):
+            nan_idxs = np.where(np.isnan(self._tracker[:, j]))[0]
+            if len(nan_idxs):
+                self._tracker[nan_idxs[0], j] = prob
+            else:
+                self._tracker[:-1, j] = self._tracker[1:, j]
+                self._tracker[-1, j] = prob
+
+    def get_mask(self):
+
+        m = ~np.isnan(self._tracker).any(axis=0)
+        m &= (np.diff(self._tracker, axis=0) <= 0).all(axis=0)
+        # TODO: softcode this cap
+        m &= self._tracker[-1] < 0.99
+
+        return m
+
+    def mark_replaced_inputs(self, replacement_mask):
+
+        self._tracker[:, replacement_mask] = np.nan
+
+    @property
+    def values(self):
+
+        return self._tracker
 
 
 def get_faulty_input_layer(data, model_options):
@@ -131,6 +163,8 @@ def get_faulty_input_layer(data, model_options):
     tolerance = model_options.get('tolerance', 0)
     prob_cap_mean = model_options.get('prob_cap_mean', 1)
     prob_cap_min = model_options.get('prob_cap_min', 1)
+    num_mono_dec_saves = model_options.get('num_mono_dec_saves', np.inf)
+    batch_size = model_options.get('num_examples', 1)
 
     if not (max_num_steps < np.inf or (tolerance > 0 or prob_cap_mean < 1 or prob_cap_min < 1) and min_num_steps < np.inf):
         logger.warn('no exit conditions for backworking CNN inputs')
@@ -145,6 +179,7 @@ def get_faulty_input_layer(data, model_options):
         costs = build_cost(data, x, layers, sess, model_options)
         cost = sum(costs)
 
+        # TODO: Add ability to only backprop through some examples in batch (don't need to adjust ones with good fit)
         optimize_input_layer = tf.train.AdamOptimizer(learning_rate=0.01).minimize(cost)
         logger.info('starting backworking')
 
@@ -155,6 +190,8 @@ def get_faulty_input_layer(data, model_options):
         cost_val_old = np.inf
         i = 0
 
+        probs_correct_tracker = ProbTracker(num_mono_dec_saves, batch_size)
+
         try:
             while True:
 
@@ -164,15 +201,34 @@ def get_faulty_input_layer(data, model_options):
                 t0 = time.time()
                 optimize_input_layer.run()
                 cost_val_new = cost.eval()
-                logger.info('%f seconds in optimization cycle with cost %f', time.time() - t0, cost_val_new)
+                logger.info('%f seconds in optimization cycle %i with cost %f', time.time() - t0, i, cost_val_new)
                 for idx, c in enumerate(costs):
                     layer = layers[idx // 2]
                     logger.debug('layer %s cost %f', layer.name, c.eval())
                 if (save_freq and i % save_freq == 0) or i == max_num_steps - 1:
-                    input_val, softmax, prob_correct_mean, prob_correct_min = eval_cnn_wrapper(x)
+                    input_vals, softmax = eval_cnn_wrapper(x)
+
+                    probs_correct = softmax[:, label]
+                    probs_correct_tracker(probs_correct)
+
+                    l.append((input_vals, softmax))
+
+                    prob_correct_mean, prob_correct_min = probs_correct.mean(), probs_correct.min()
                     logger.info('%f / %f min / mean probability of correct label', prob_correct_min, prob_correct_mean)
-                    if (prob_correct_mean > prob_cap_mean or prob_correct_min > prob_cap_min) and i >= min_num_steps:
+
+                    if i >= min_num_steps and (prob_correct_mean > prob_cap_mean or prob_correct_min > prob_cap_min):
                         break
+
+                    m = probs_correct_tracker.get_mask()
+
+                    if m.any():
+                        logger.info('reassignment mask %s', m)
+                        logger.debug('probability history of %i steps: %s',
+                                     num_mono_dec_saves, probs_correct_tracker.values[:, m])
+                        shape = [m.sum()] + [model_options['image_dim_size']] * 2
+                        input_vals[m] = np.random.rand(*shape)
+                        probs_correct_tracker.mark_replaced_inputs(m)
+                        sess.run(x.assign(input_vals))
 
                 if abs(cost_val_new - cost_val_old) < tolerance and i >= min_num_steps:
                     break
@@ -208,16 +264,17 @@ if __name__ == '__main__':
 
     model_options_update = {
         'cost_factors': cost_factors,
-        'save_freq': 4,
+        'save_freq': 1,
         'prob_cap_min': 0.999,
-        'num_examples': 2,
+        'num_examples': 8,
         'prev_coeff': 0.5,
         'sim_coeff': 0.5,
+        'num_mono_dec_saves': 5,
     }
 
     model_options.update(model_options_update)
 
-    for label in range(6, 10):
+    for label in range(10):
 
         model_options['label'] = label
 

@@ -110,13 +110,11 @@ def build_model(model_options, const_params=False):
     if const_params:
         num_examples = model_options.get('num_examples', 1)
         shape = [num_examples] + [model_options['image_dim_size']] * 2
-        x = tf.Variable(tf.random_uniform(shape, 0, 1))
+        # Need to clip since might backwork values outside [0, 1]
+        x = tf.Variable(tf.clip_by_value(tf.random_uniform(shape, 0, 1), 0, 1))
     else:
         x = tf.placeholder("float", shape=[None, image_dim_size ** 2])
     y = tf.placeholder("float", shape=[None, num_classes])
-
-    # Need to clip since might backwork values outside [0, 1]
-    x = tf.clip_by_value(x, 0, 1)
 
     # These are the correctly formatted images
     image = tf.reshape(x, (-1, image_dim_size, image_dim_size, 1), name='inputs')

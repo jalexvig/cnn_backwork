@@ -2,3 +2,4 @@ MNIST_data
 venv
 __pycache__
 *.log
+results
