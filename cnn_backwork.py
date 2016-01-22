@@ -26,12 +26,8 @@ def compute_layers_fixed_label(data, label, x, layers, sess):
 
 def get_cost_from_layer(layer, layer_label, label, prev_coeff=1, sim_coeff=1):
 
-    # layer has dimensionality (num_gen_examples, 28, 28, 1)
+    # For convolutional layers, layer has dimensionality (num_gen_examples, 28, 28, 1) and
     # layer_label has dimensionality (num_training_examples_label, 28, 28, 1)
-
-    # TODO: These dimensionality calculations are not correct b/c there are non convolutional layers
-
-    # layer_shape = layer.get_shape().as_list()
 
     layer2 = tf.expand_dims(layer, 1)
     layer_label2 = tf.expand_dims(layer_label, 1)
@@ -41,45 +37,33 @@ def get_cost_from_layer(layer, layer_label, label, prev_coeff=1, sim_coeff=1):
     similarity_dist_term = tf.pow(layer - layer2, 2)
 
     if 'softmax' in layer_name:
-        # Add all probabilities of guessing the wrong answer
+        # Average all probabilities of guessing the wrong answer
         cost = 1 - layer[:, label]
         cost = tf.reduce_mean(cost)
 
-        # cost = tf.reduce_sum(layer, reduction_indices=[1]) - layer[:, label]
-        # cost = tf.reduce_max(cost)
-
-        return (cost,)
+        return cost,
 
     elif 'inputs' in layer_name or 'conv' in layer_name:
-        # (num_training_examples_label, num_gen_examples, 28, 28, 1)
+        # prev_dist_term has dimensionality (num_training_examples_label, num_gen_examples, 28, 28, 1)
         # Get the mean of the minimum distances of generated inputs to training examples of label
         prev_dist_term = tf.reduce_mean(prev_dist_term, reduction_indices=[2, 3, 4])
 
-        # overcount = similarity_dist_term[slice(0, layer_shape[0]), slice(0, layer_shape[0]), :, :, :]
-
     elif 'fc' in layer_name:
         pass
-        # overcount = similarity_dist_term[slice(0, layer_shape[0]), slice(0, layer_shape[0]), :]
 
     else:
-        logger.warn('Unknown layer type %s', layer_name)
-        raise ValueError
+        raise ValueError('Unknown layer type on layer %s', layer_name)
 
     prev_dist_term = tf.reduce_min(prev_dist_term, reduction_indices=[0])
     prev_dist_term = tf.reduce_mean(prev_dist_term)
 
-    # TODO: fix calculation of overcount (2x above)
-    # # Take mean over all relevant differences
-    # similarity_dist_term = tf.reduce_sum(similarity_dist_term)
-    # similarity_dist_term -= overcount
-    # similarity_dist_term /= np.product(layer_shape) * (layer_shape[0] - 1)
-
+    # TODO: this compares a vector to itself (remove self comparisons)
     similarity_dist_term = tf.reduce_mean(similarity_dist_term)
 
     prev_cost = prev_coeff / prev_dist_term
     sim_cost = sim_coeff / similarity_dist_term
 
-    return (prev_cost, sim_cost)
+    return prev_cost, sim_cost
 
 
 def build_cost(data, x, layers, sess, model_options):
@@ -103,7 +87,7 @@ def build_cost(data, x, layers, sess, model_options):
     return costs
 
 
-def eval_cnn(x_pf, softmax_layer, label, num_features, input_):
+def eval_cnn(x_pf, softmax_layer, num_features, input_):
 
     input_val = input_.eval()
 
@@ -169,7 +153,7 @@ def get_faulty_input_layer(data, model_options):
     if not (max_num_steps < np.inf or (tolerance > 0 or prob_cap_mean < 1 or prob_cap_min < 1) and min_num_steps < np.inf):
         logger.warn('no exit conditions for backworking CNN inputs')
 
-    eval_cnn_wrapper = functools.partial(eval_cnn, x_pf, softmax_layer_pf, label, num_features)
+    eval_cnn_wrapper = functools.partial(eval_cnn, x_pf, softmax_layer_pf, num_features)
 
     l = []
 
@@ -242,6 +226,21 @@ def get_faulty_input_layer(data, model_options):
 
         return l
 
+num_layers = len(model_options['conv_layers']) + 3
+cost_factors = np.logspace(-num_layers, -1, num=num_layers)
+cost_factors[-1] *= 100
+
+model_options_update = {
+        'cost_factors': cost_factors,
+        'save_freq': 1,
+        'prob_cap_min': 0.999,
+        'num_examples': 2,
+        'prev_coeff': 0.5,
+        'sim_coeff': 0.5,
+        'num_mono_dec_saves': 5,
+    }
+
+model_options.update(model_options_update)
 
 if __name__ == '__main__':
 
@@ -256,23 +255,7 @@ if __name__ == '__main__':
         filename=FILEPATH,
     )
 
-    num_layers = len(model_options['conv_layers']) + 3
-    cost_factors = np.logspace(-num_layers, -1, num=num_layers)
-    cost_factors[-1] *= 100
-
     mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
-
-    model_options_update = {
-        'cost_factors': cost_factors,
-        'save_freq': 1,
-        'prob_cap_min': 0.999,
-        'num_examples': 8,
-        'prev_coeff': 0.5,
-        'sim_coeff': 0.5,
-        'num_mono_dec_saves': 5,
-    }
-
-    model_options.update(model_options_update)
 
     for label in range(10):
 
