@@ -6,7 +6,7 @@ import numpy as np
 import tensorflow as tf
 
 import input_data
-from my_mnist_backwork_input_pool import build_model, model_options
+from proc_mnist import build_model, model_options
 
 ### LOGGER SETTINGS
 logger = logging.getLogger(__name__)
@@ -234,7 +234,7 @@ model_options_update = {
         'cost_factors': cost_factors,
         'save_freq': 1,
         'prob_cap_min': 0.999,
-        'num_examples': 2,
+        'num_examples': 8,
         'prev_coeff': 0.5,
         'sim_coeff': 0.5,
         'num_mono_dec_saves': 5,
