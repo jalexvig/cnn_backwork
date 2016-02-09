@@ -1,6 +1,5 @@
 import logging
 import datetime
-from preprocess_data import augment_data
 import math
 import os
 import pickle
@@ -9,6 +8,7 @@ from collections import OrderedDict
 import tensorflow as tf
 
 import input_data
+from preprocess_data import augment_data
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ def _load_params(model_options, constant=False):
             num_fc_in = list(od.values())[-2][0].shape[0]
             constructor = tf.constant if constant else tf.Variable
             params = OrderedDict([(name, (constructor(val[0]), constructor(val[1]))) for name, val in od.items()])
+        logger.info('Loaded params from %s', fp_params)
     elif not constant:
         params, num_fc_in = _init_params(model_options)
     else:
@@ -87,6 +88,8 @@ def _save_params(params, fp):
     with open(fp, 'wb') as f:
         pickle.dump(od, f)
 
+    logger.info('Saved params to %s', fp)
+
 
 def weight_variable(shape, name=None):
     initial = tf.truncated_normal(shape, stddev=0.1, name=name)
@@ -98,7 +101,7 @@ def bias_variable(shape, name=None):
     return tf.Variable(initial)
 
 
-def build_model(model_options, const_params=False):
+def build_model(model_options, const_params=False, x_values=None):
 
     conv_layers = model_options['conv_layers']
     pool_layers = model_options['pool_layers']
@@ -111,9 +114,13 @@ def build_model(model_options, const_params=False):
 
     if const_params:
         num_examples = model_options.get('num_examples', 1)
-        shape = [num_examples] + [model_options['image_dim_size']] * 2
-        # Need to clip since might backwork values outside [0, 1]
-        x = tf.Variable(tf.clip_by_value(tf.random_uniform(shape, 0, 1), 0, 1))
+        shape = [num_examples] + [image_dim_size] * 2
+        if x_values is not None:
+            x_val = x_values[:num_examples].reshape(*shape)
+        else:
+            # Need to clip since might backwork values outside [0, 1]
+            x_val = tf.random_uniform(shape, 0, 1)
+        x = tf.Variable(tf.clip_by_value(x_val, 0, 1))
     else:
         x = tf.placeholder("float", shape=[None, image_dim_size ** 2])
     y = tf.placeholder("float", shape=[None, num_classes])
@@ -151,11 +158,6 @@ def build_model(model_options, const_params=False):
 def train(data, model_options):
 
     params, x, y, layers = build_model(model_options)
-    # # Get initial parameters (for comparison purposes)
-    # with tf.Session():
-    #     tf.initialize_all_variables().run()
-    #     _save_params(params, model_options['fp_params'])
-    #     input('saved')
     softmax_layer = layers[-1]
 
     xent = -tf.reduce_sum(y * tf.log(softmax_layer))
@@ -196,7 +198,7 @@ def train(data, model_options):
 
 ### PARAMS
 
-FP_PARAMS = 'params_aug_misclass1.pkl'
+FP_PARAMS = 'params_tmp.pkl'
 BATCH_SIZE = 50
 IMAGE_DIM_SIZE = 28
 NUM_CLASSES = 10
@@ -231,7 +233,7 @@ if __name__ == '__main__':
 
     FORMAT = '%(levelname)s: %(message)s'
     FILEPATH = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
-    FILEPATH += '_proc_mnist_aug.log'
+    FILEPATH += '_proc_mnist.log'
     logging.basicConfig(
         level=logging.INFO,
         format=FORMAT,
@@ -242,6 +244,6 @@ if __name__ == '__main__':
 
     mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 
-    augment_data(mnist)
+    # augment_data(mnist, folderpath='results/results_8_batch_min_prob_0999')
 
     train(mnist, model_options)

@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 def compute_layers_fixed_label(data, label, x, layers, sess):
 
-    labels = data.train.labels.argmax(1)
-    mask = labels == label
+    labels = data.train.labels
+    mask = labels[:, label] == 1
 
     data_label = data.train.images[mask]
 
@@ -134,11 +134,6 @@ class ProbTracker:
 
 def get_faulty_input_layer(data, model_options):
 
-    # Note: convolution + activation + pooling is considered 1 layer
-    params, x, y, layers = build_model(model_options, const_params=True)
-    params_pf, x_pf, y_pf, layers_pf = build_model(model_options)
-    softmax_layer_pf = layers_pf[-1]
-
     save_freq = model_options.get('save_freq', 20)
     label = model_options['label']
     num_features = model_options['num_features']
@@ -149,6 +144,21 @@ def get_faulty_input_layer(data, model_options):
     prob_cap_min = model_options.get('prob_cap_min', 1)
     num_mono_dec_saves = model_options.get('num_mono_dec_saves', np.inf)
     batch_size = model_options.get('num_examples', 1)
+    init_w_train_vals = model_options.get('init_w_train_vals', False)
+
+    x_vals = None
+    if init_w_train_vals:
+        labels = data.train.labels
+        mask = labels[:, label] == 1
+        train_examples = data.train.images[mask]
+        x_vals = np.random.permutation(train_examples)
+        x_vals = np.array_split(x_vals, 8)
+        x_vals = np.array([np.average(xv, axis=0) for xv in x_vals])
+
+    # Note: convolution + activation + pooling is considered 1 layer
+    params, x, y, layers = build_model(model_options, const_params=True, x_values=x_vals)
+    params_pf, x_pf, y_pf, layers_pf = build_model(model_options)
+    softmax_layer_pf = layers_pf[-1]
 
     if not (max_num_steps < np.inf or (tolerance > 0 or prob_cap_mean < 1 or prob_cap_min < 1) and min_num_steps < np.inf):
         logger.warn('no exit conditions for backworking CNN inputs')
@@ -237,17 +247,22 @@ model_options_update = {
         'num_examples': 8,
         'prev_coeff': 0.5,
         'sim_coeff': 0.5,
-        'num_mono_dec_saves': 5,
+        'num_mono_dec_saves': 3,
+        'max_num_steps': 60,
     }
 
 model_options.update(model_options_update)
 
 if __name__ == '__main__':
 
+    # TODO: regen results_0 from blog run
+    modifier = '_aug_misclass'
+    model_options['fp_params'] = 'params_aug_misclass2.pkl'
+
     import datetime
     FORMAT = '%(levelname)s: %(message)s'
     FILEPATH = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
-    FILEPATH += '_backwork_cnn.log'
+    FILEPATH += '_backwork_cnn{}.log'.format(modifier)
 
     logging.basicConfig(
         level=logging.DEBUG,
@@ -262,5 +277,5 @@ if __name__ == '__main__':
         model_options['label'] = label
 
         results = get_faulty_input_layer(mnist, model_options)
-        with open('results_{}.pkl'.format(label), 'wb') as f:
+        with open('results{}_{}.pkl'.format(modifier, label), 'wb') as f:
             pickle.dump(results, f)

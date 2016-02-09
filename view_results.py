@@ -1,10 +1,12 @@
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid
 import pickle
+import os
 
 
-def read_results(label):
-    with open('results_{}.pkl'.format(label), 'rb') as f:
+def read_results(label, folderpath):
+    filepath = os.path.join(folderpath, 'results_{}.pkl'.format(label))
+    with open(filepath, 'rb') as f:
         res = pickle.load(f)
     return res
 
@@ -22,17 +24,19 @@ def proc_results_label(label, imgs, softmaxs, axs):
         ax.imshow(val)
 
 
-def proc_all_results(num_examples, save_filename=None, res=None):
+def proc_all_results(num_examples, save_filename=None, res=None, folderpath=''):
+
+    num_results = 10
 
     fig = plt.figure(figsize=(12, 12))
-    axs = ImageGrid(fig, rect=111, nrows_ncols=(10, num_examples),
+    axs = ImageGrid(fig, rect=111, nrows_ncols=(num_results, num_examples),
                     axes_pad=0.35, label_mode='L')
 
-    for label in range(10):
+    for label in range(num_results):
 
         # TODO: don't hardcode timestep
         if res is None:
-            imgs, softmaxs = read_results(label)[-1]
+            imgs, softmaxs = read_results(label, folderpath)[-1]
         else:
             imgs, softmaxs = res[label]
 

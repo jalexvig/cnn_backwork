@@ -35,13 +35,13 @@ def augment_random_data(data):
     data.train = new_train
 
 
-def augment_data(data):
+def augment_data(data, folderpath=''):
 
     images = data.train.images
     labels = data.train.labels
 
     images = images.reshape((-1, 28, 28, 1))
-    imgs = [x for i in range(10) for x in read_results(i)[-1][0]]
+    imgs = [x for i in range(10) for x in read_results(i, folderpath)[-1][0]]
     imgs = np.array(imgs)[:, :, :, None]
 
     lbls = np.empty((imgs.shape[0], 10))
