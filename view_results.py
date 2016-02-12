@@ -106,7 +106,7 @@ def view_all_salient_features(model_options, labels=None, num_examples=None, fol
 if __name__ == '__main__':
 
     from cnn_backwork import model_options
-    model_options['fp_params'] = 'params_norm4.pkl'
+    model_options['fp_params'] = 'params/params_norm4.pkl'
 
     # num_examples = model_options['num_examples']
     # proc_all_results(num_examples, 'misclass')

@@ -1,5 +1,4 @@
 import logging
-import datetime
 import math
 import os
 import pickle
@@ -198,7 +197,7 @@ def train(data, model_options):
 
 ### PARAMS
 
-FP_PARAMS = 'params_tmp.pkl'
+FP_PARAMS = 'params/params_tmp.pkl'
 BATCH_SIZE = 50
 IMAGE_DIM_SIZE = 28
 NUM_CLASSES = 10
@@ -231,9 +230,12 @@ model_options = {'image_dim_size': IMAGE_DIM_SIZE,
 
 if __name__ == '__main__':
 
+    import datetime
+
     FORMAT = '%(levelname)s: %(message)s'
     FILEPATH = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
     FILEPATH += '_proc_mnist.log'
+    FILEPATH = os.path.join('logs', FILEPATH)
     logging.basicConfig(
         level=logging.INFO,
         format=FORMAT,

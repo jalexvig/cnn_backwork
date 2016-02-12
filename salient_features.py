@@ -68,6 +68,6 @@ def get_salient_features(model_options, x_vals, label,
 
 if __name__ == '__main__':
 
-    model_options['fp_params'] = 'params_norm4.pkl'
+    model_options['fp_params'] = 'params/params_norm4.pkl'
 
     print(get_grads(model_options, np.random.rand(3, 28 ** 2), 2))

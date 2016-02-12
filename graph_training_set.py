@@ -4,19 +4,12 @@ import tensorflow as tf
 import input_data
 from cnn_backwork import build_model
 from view_results import proc_all_results
+from utils import get_data_label
 
 
 def get_permuted_train_data(data):
 
-    l = []
-
-    # TODO: modify this to use utils
-    labels = data.train.labels.argmax(1)
-
-    for label in range(10):
-        mask = labels == label
-        data_label = data.train.images[mask]
-        l.append(np.random.permutation(data_label))
+    l = [np.random.permutation(get_data_label(data, label)) for label in range(10)]
 
     return l
 
@@ -74,7 +67,7 @@ if __name__ == '__main__':
     from cnn_backwork import model_options
 
     model_options['num_examples'] = 8
-    model_options['fp_params'] = 'params_norm3.pkl'
+    model_options['fp_params'] = 'params/params_norm3.pkl'
 
     model_options['fp_save'] = 'worst_train_data'
 

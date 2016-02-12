@@ -1,12 +1,14 @@
 import functools
 import logging
 import pickle
+import time
 
 import numpy as np
 import tensorflow as tf
 
 import input_data
 from proc_mnist import build_model, model_options
+from utils import get_data_label
 
 ### LOGGER SETTINGS
 logger = logging.getLogger(__name__)
@@ -14,28 +16,24 @@ logger = logging.getLogger(__name__)
 
 def compute_layers_fixed_label(data, label, x, layers, sess):
 
-    # TODO: modify this to use utils
-    labels = data.train.labels
-    mask = labels[:, label] == 1
-
-    data_label = data.train.images[mask]
+    data_label = get_data_label(data, label)
 
     layers_label = sess.run(layers, feed_dict={x: data_label})
 
     return layers_label
 
 
-def get_cost_from_layer(layer, layer_label, label, prev_coeff=1, sim_coeff=1):
+def get_cost_from_layer(layer, layer_label, label):
 
     # For convolutional layers, layer has dimensionality (num_gen_examples, 28, 28, 1) and
     # layer_label has dimensionality (num_training_examples_label, 28, 28, 1)
 
-    layer2 = tf.expand_dims(layer, 1)
-    layer_label2 = tf.expand_dims(layer_label, 1)
     layer_name = layer.name.lower()
 
-    prev_dist_term = tf.pow(layer - layer_label2, 2)
-    similarity_dist_term = tf.pow(layer - layer2, 2)
+    # reference_dist_tensor is the tensor that represents the distance from generated images to the reference images
+    # batch_dist_tensor is the tensor that represents the distance from generated images to other images in the batch
+    reference_dist_tensor = tf.pow(layer - tf.expand_dims(layer_label, 1), 2)
+    batch_dist_tensor = tf.pow(layer - tf.expand_dims(layer, 1), 2)
 
     if 'softmax' in layer_name:
         # Average all probabilities of guessing the wrong answer
@@ -45,9 +43,9 @@ def get_cost_from_layer(layer, layer_label, label, prev_coeff=1, sim_coeff=1):
         return cost,
 
     elif 'inputs' in layer_name or 'conv' in layer_name:
-        # prev_dist_term has dimensionality (num_training_examples_label, num_gen_examples, 28, 28, 1)
+        # reference_dist_tensor has dimensionality (num_training_examples_label, num_gen_examples, 28, 28, 1)
         # Get the mean of the minimum distances of generated inputs to training examples of label
-        prev_dist_term = tf.reduce_mean(prev_dist_term, reduction_indices=[2, 3, 4])
+        reference_dist_tensor = tf.reduce_mean(reference_dist_tensor, reduction_indices=[2, 3, 4])
 
     elif 'fc' in layer_name:
         pass
@@ -55,35 +53,35 @@ def get_cost_from_layer(layer, layer_label, label, prev_coeff=1, sim_coeff=1):
     else:
         raise ValueError('Unknown layer type on layer %s', layer_name)
 
-    prev_dist_term = tf.reduce_min(prev_dist_term, reduction_indices=[0])
-    prev_dist_term = tf.reduce_mean(prev_dist_term)
+    reference_dist_tensor = tf.reduce_min(reference_dist_tensor, reduction_indices=[0])
+    reference_dist_tensor = tf.reduce_mean(reference_dist_tensor)
 
     # TODO: this compares a vector to itself (remove self comparisons)
-    similarity_dist_term = tf.reduce_mean(similarity_dist_term)
+    batch_dist_tensor = tf.reduce_mean(batch_dist_tensor)
 
-    prev_cost = prev_coeff / prev_dist_term
-    sim_cost = sim_coeff / similarity_dist_term
+    reference_cost = 1 / reference_dist_tensor
+    batch_cost = 1 / batch_dist_tensor
 
-    return prev_cost, sim_cost
+    return reference_cost, batch_cost
 
 
 def build_cost(data, x, layers, sess, model_options):
 
-    cost_factors = model_options['cost_factors']
+    layer_cost_coeffs = model_options['layer_cost_coeffs']
     label = model_options['label']
-    sim_coeff = model_options['sim_coeff']
-    prev_coeff = model_options['prev_coeff']
+    batch_cost_coeff = model_options['batch_cost_coeff']
+    reference_cost_coeff = model_options['reference_cost_coeff']
 
     layers_label = compute_layers_fixed_label(data, label, x, layers, sess)
     layers_label = [tf.constant(a, name='layer{}_fixed_label'.format(idx)) for idx, a in enumerate(layers_label)]
 
-    costs = []
-    for layer, layer_label in zip(layers, layers_label):
-        # TODO: get layer_shape
-        cost_tup = get_cost_from_layer(layer, layer_label, label, sim_coeff=sim_coeff, prev_coeff=prev_coeff)
-        costs.append(cost_tup)
+    costs = [get_cost_from_layer(layer, layer_label, label) for layer, layer_label in zip(layers, layers_label)]
+    costs = [c for cost_tuple in costs for c in cost_tuple]
 
-    costs = [f * c for f, cost_tup in zip(cost_factors, costs) for c in cost_tup]
+    weights = np.outer(layer_cost_coeffs[: -1], [reference_cost_coeff, batch_cost_coeff]).flatten()
+    weights = np.append(weights, layer_cost_coeffs[-1])
+
+    costs = (costs * weights)
 
     return costs
 
@@ -92,9 +90,9 @@ def eval_cnn(x_pf, softmax_layer, num_features, input_):
 
     input_val = input_.eval()
 
-    softmax = softmax_layer.eval(feed_dict={x_pf: input_val.reshape(-1, num_features)})
+    softmax_val = softmax_layer.eval(feed_dict={x_pf: input_val.reshape(-1, num_features)})
 
-    return input_val, softmax
+    return input_val, softmax_val
 
 
 class ProbTracker:
@@ -149,10 +147,7 @@ def get_faulty_input_layer(data, model_options):
 
     x_vals = None
     if init_w_train_vals:
-        # TODO: modify this to use utils
-        labels = data.train.labels
-        mask = labels[:, label] == 1
-        train_examples = data.train.images[mask]
+        train_examples = get_data_label(data, label)
         x_vals = np.random.permutation(train_examples)
         x_vals = np.array_split(x_vals, 8)
         x_vals = np.array([np.average(xv, axis=0) for xv in x_vals])
@@ -175,12 +170,10 @@ def get_faulty_input_layer(data, model_options):
         costs = build_cost(data, x, layers, sess, model_options)
         cost = sum(costs)
 
-        # TODO: Add ability to only backprop through some examples in batch (don't need to adjust ones with good fit)
         optimize_input_layer = tf.train.AdamOptimizer(learning_rate=0.01).minimize(cost)
         logger.info('starting backworking')
 
         tf.initialize_all_variables().run()
-        import time
         t_start = time.time()
 
         cost_val_old = np.inf
@@ -198,9 +191,11 @@ def get_faulty_input_layer(data, model_options):
                 optimize_input_layer.run()
                 cost_val_new = cost.eval()
                 logger.info('%f seconds in optimization cycle %i with cost %f', time.time() - t0, i, cost_val_new)
+
                 for idx, c in enumerate(costs):
                     layer = layers[idx // 2]
                     logger.debug('layer %s cost %f', layer.name, c.eval())
+
                 if (save_freq and i % save_freq == 0) or i == max_num_steps - 1:
                     input_vals, softmax = eval_cnn_wrapper(x)
 
@@ -239,16 +234,16 @@ def get_faulty_input_layer(data, model_options):
         return l
 
 num_layers = len(model_options['conv_layers']) + 3
-cost_factors = np.logspace(-num_layers, -1, num=num_layers)
-cost_factors[-1] *= 100
+layer_cost_coeffs = np.logspace(-num_layers, -1, num=num_layers)
+layer_cost_coeffs[-1] *= 100
 
 model_options_update = {
-        'cost_factors': cost_factors,
+        'layer_cost_coeffs': layer_cost_coeffs,
         'save_freq': 1,
         'prob_cap_min': 0.999,
         'num_examples': 8,
-        'prev_coeff': 0.5,
-        'sim_coeff': 0.5,
+        'reference_cost_coeff': 0.5,
+        'batch_cost_coeff': 0.5,
         'num_mono_dec_saves': 3,
         'max_num_steps': 60,
     }
@@ -257,20 +252,24 @@ model_options.update(model_options_update)
 
 if __name__ == '__main__':
 
-    # TODO: regen results_0 from blog run
     modifier = '_aug_misclass'
-    model_options['fp_params'] = 'params_aug_misclass2.pkl'
+    model_options['fp_params'] = 'params/params_aug_misclass2.pkl'
 
     import datetime
+    import os
+
     FORMAT = '%(levelname)s: %(message)s'
     FILEPATH = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
     FILEPATH += '_backwork_cnn{}.log'.format(modifier)
+    FILEPATH = os.path.join('logs', FILEPATH)
 
     logging.basicConfig(
         level=logging.DEBUG,
         format=FORMAT,
         filename=FILEPATH,
     )
+
+    logger.info(model_options)
 
     mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 
