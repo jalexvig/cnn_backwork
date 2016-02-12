@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 def compute_layers_fixed_label(data, label, x, layers, sess):
 
+    # TODO: modify this to use utils
     labels = data.train.labels
     mask = labels[:, label] == 1
 
@@ -148,6 +149,7 @@ def get_faulty_input_layer(data, model_options):
 
     x_vals = None
     if init_w_train_vals:
+        # TODO: modify this to use utils
         labels = data.train.labels
         mask = labels[:, label] == 1
         train_examples = data.train.images[mask]

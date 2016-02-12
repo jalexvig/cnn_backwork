@@ -10,6 +10,7 @@ def get_permuted_train_data(data):
 
     l = []
 
+    # TODO: modify this to use utils
     labels = data.train.labels.argmax(1)
 
     for label in range(10):

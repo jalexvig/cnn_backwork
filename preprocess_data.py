@@ -1,6 +1,6 @@
 import input_data
 import numpy as np
-from view_results import read_results
+from utils import read_results
 
 
 def _shuffle_images_labels(images, labels):
